@@ -181,42 +181,6 @@ def amcl_pose_callback(msg):
     robot_origin = (grid_x, grid_y)
     rospy.loginfo("Robot origin (grid): %s", str(robot_origin))
 
-def visualize_points_on_map(pgm_file, point1, point2):
-    """
-    Loads a pgm map image, overlays two points on it, and displays the result.
-
-    Args:
-        pgm_file (str): The path to the pgm file.
-        point1 (tuple): (x, y) pixel coordinates for the first point.
-        point2 (tuple): (x, y) pixel coordinates for the second point.
-    """
-    # Load the pgm image in grayscale
-    image = cv2.imread(pgm_file, cv2.IMREAD_GRAYSCALE)
-    if image is None:
-        print("Error: Unable to load the pgm file.")
-        return
-    
-    # Convert grayscale image to a color image for visualization purposes
-    color_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-    
-    # Draw the first point (red circle)
-    cv2.circle(color_image, point1, radius=5, color=(0, 0, 255), thickness=-1)
-    # Draw the second point (green circle)
-    cv2.circle(color_image, point2, radius=5, color=(0, 255, 0), thickness=-1)
-    
-    
-    # Annotate the points with text labels
-    cv2.putText(color_image, "Point 1", (point1[0] + 10, point1[1]), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
-    cv2.putText(color_image, "Point 2", (point2[0] + 10, point2[1]), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-    
-    
-    # Display the image with the overlaid points
-    cv2.imshow("Map with Points", color_image)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-
 # --------------------- MAIN EXECUTION ---------------------
 if __name__ == "__main__":
     rospy.init_node('global_planner_node', anonymous=True)
@@ -248,12 +212,11 @@ if __name__ == "__main__":
         rospy.sleep(0.1)
 
     # Use the robot's origin as the starting point for A* path planning
-    corridor_start = robot_origin
-    visualize_points_on_map(occupancy_img, corridor_start, corridor_start)
+    corridor_start = (robot_origin[0], 776 - robot_origin[1])
 
     # The goal remains as before (modify as needed)
-    corridor_goal = (robot_origin[0] + 365, robot_origin[1] + 440)
-    
+    corridor_goal  = (485, 475)
+
     # Execute A* path planning
     corridor_path = a_star(inflated_grid, corridor_start, corridor_goal)
     if corridor_path is None:
@@ -263,7 +226,8 @@ if __name__ == "__main__":
 
     # Generate Boustrophedon coverage path starting from the end of the A* path
     coverage_start = corridor_path[-1]
-    coverage_goal = (robot_origin[0] + 190, robot_origin[1] + 65)
+    # coverage_goal = (230, 700)
+    coverage_goal  = (310, 100)
     
     coverage_path = boustrophedon_path(inflated_grid, coverage_start, coverage_goal, row_step=45)
     if coverage_path is None:
@@ -276,14 +240,28 @@ if __name__ == "__main__":
 
     # Concatenate the two paths (removing the duplicate junction point)
     complete_trajectory = corridor_path + smoothed_coverage[1:]
-    rospy.loginfo("Complete trajectory generated with %d points.", len(complete_trajectory))
+    
+    # After computing the complete trajectory in pixel coordinates
+    # First, flip y coordinate: new_y = 776 - old_y
+    flipped_trajectory = [(pt[0], 776 - pt[1]) for pt in complete_trajectory]
+
+    # Then, convert from pixel coordinates to world coordinates using resolution and origin
+    resolution = map_info_global['resolution']  # e.g., 0.05
+    origin = map_info_global['origin']          # e.g., [-6.55, -36.95, 0]
+    world_trajectory = [(
+        pt[0] * resolution + origin[0],
+        pt[1] * resolution + origin[1]
+    ) for pt in flipped_trajectory]
+
+    rospy.loginfo("Complete trajectory generated with %d points.", len(world_trajectory))
+
 
     # Build the nav_msgs/Path message
     path_msg = Path()
     path_msg.header.stamp = rospy.Time.now()
     path_msg.header.frame_id = "map"  # Ensure this frame matches the one used in RViz
 
-    for pt in complete_trajectory:
+    for pt in world_trajectory:
         pose = PoseStamped()
         pose.header = path_msg.header
         pose.pose.position.x = pt[0]
