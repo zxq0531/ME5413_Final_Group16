@@ -197,7 +197,7 @@ if __name__ == "__main__":
     occupancy_img, map_info = load_map(yaml_file)
     map_info_global = map_info  # Save globally for callback usage
 
-    ret, binary_img = cv2.threshold(occupancy_img, 250, 255, cv2.THRESH_BINARY)
+    ret, binary_img = cv2.threshold(occupancy_img, 0, 255, cv2.THRESH_BINARY)
     occupancy_grid = (binary_img // 255).astype(np.uint8)
 
     # Inflate obstacles using a 10x10 kernel
@@ -212,10 +212,10 @@ if __name__ == "__main__":
         rospy.sleep(0.1)
 
     # Use the robot's origin as the starting point for A* path planning
-    corridor_start = (robot_origin[0], 776 - robot_origin[1])
+    corridor_start = (robot_origin[0], 508 - robot_origin[1])
 
     # The goal remains as before (modify as needed)
-    corridor_goal  = (485, 475)
+    corridor_goal  = (425, 475)
 
     # Execute A* path planning
     corridor_path = a_star(inflated_grid, corridor_start, corridor_goal)
@@ -227,7 +227,7 @@ if __name__ == "__main__":
     # Generate Boustrophedon coverage path starting from the end of the A* path
     coverage_start = corridor_path[-1]
     # coverage_goal = (230, 700)
-    coverage_goal  = (310, 100)
+    coverage_goal  = (240, 95)
     
     coverage_path = boustrophedon_path(inflated_grid, coverage_start, coverage_goal, row_step=45)
     if coverage_path is None:
@@ -242,8 +242,8 @@ if __name__ == "__main__":
     complete_trajectory = corridor_path + smoothed_coverage[1:]
     
     # After computing the complete trajectory in pixel coordinates
-    # First, flip y coordinate: new_y = 776 - old_y
-    flipped_trajectory = [(pt[0], 776 - pt[1]) for pt in complete_trajectory]
+    # First, flip y coordinate: new_y = 508 - old_y
+    flipped_trajectory = [(pt[0], 508 - pt[1]) for pt in complete_trajectory]
 
     # Then, convert from pixel coordinates to world coordinates using resolution and origin
     resolution = map_info_global['resolution']  # e.g., 0.05
