@@ -1,0 +1,9 @@
+<launch>
+  <!-- Include first launch file -->
+  <include file="$(find me5413_world)/launch/world.launch" />
+
+  <!-- Include second launch file -->
+  <include file="$(find global_planner)/launch/global_planner.launch" />
+
+
+</launch>
