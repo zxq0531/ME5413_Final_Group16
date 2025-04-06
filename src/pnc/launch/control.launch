@@ -1,0 +1,6 @@
+<launch>
+  <!-- Use simulated time -->
+  <param name="use_sim_time" value="true" />
+
+  <node pkg="pnc" type="controller_node.py" name="nmpc_controller" output="screen"/>
+</launch>
