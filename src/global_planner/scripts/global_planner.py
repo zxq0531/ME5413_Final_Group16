@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os
+import math
 import rospy
 import rospkg
 import cv2
@@ -9,6 +10,7 @@ import yaml
 import heapq
 from nav_msgs.msg import Path
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
+from scipy.interpolate import splprep, splev
 
 # --------------------- A* GLOBAL PATH PLANNING ---------------------
 class Node:
@@ -16,8 +18,8 @@ class Node:
         self.x = x                # x-coordinate in the grid
         self.y = y                # y-coordinate in the grid
         self.cost = cost          # Cost from the start node (g value)
-        self.priority = priority  # f value = g + h (cost + heuristic)
-        self.parent = parent      # Parent node for path backtracking
+        self.priority = priority  # f = g + h (cost + heuristic)
+        self.parent = parent      # Parent node for backtracking
 
     def __lt__(self, other):
         return self.priority < other.priority
@@ -68,10 +70,10 @@ def a_star(occupancy_grid, start, goal):
             heapq.heappush(open_list, new_node)
     return None
 
-# --------------------- BOUSTROPHEDON COVERAGE PATH WITH CHAIKIN SMOOTHING ---------------------
-def boustrophedon_path(occupancy_grid, start, goal, row_step=20):
+# --------------------- BOUSTROPHEDON COVERAGE PATH PLANNING ---------------------
+def boustrophedon_path(occupancy_grid, start, goal, row_step=40):
     """
-    Generates a boustrophedon (ox-plowing) path between the start and goal points.
+    Generates a boustrophedon (lawn-mowing) coverage path between the start and goal points.
     Handles descending order if the start's y-coordinate is greater than the goal's.
     """
     x_min = min(start[0], goal[0])
@@ -117,6 +119,29 @@ def chaikin_smoothing(path, iterations=3):
         path = new_path
     return [(int(round(pt[0])), int(round(pt[1]))) for pt in path]
 
+# --------------------- SPLINE SMOOTHING FUNCTION ---------------------
+def spline_smoothing(path, num_points=150, smoothing=0):
+    """
+    Smooths the given path using spline interpolation.
+    
+    Parameters:
+        path: List of (x, y) tuples representing the original path.
+        num_points: Number of points to sample in the smooth path.
+        smoothing: Smoothing factor; s=0 forces interpolation through all points.
+        
+    Returns:
+        smooth_path: List of (x, y) tuples (integer coordinates) representing the smooth path.
+    """
+    path = np.array(path)
+    if len(path) < 2:
+        return path.tolist()
+    # Create a parametric spline representation of the path
+    tck, u = splprep([path[:,0], path[:,1]], s=smoothing)
+    u_new = np.linspace(0, 1, num_points)
+    x_new, y_new = splev(u_new, tck)
+    smooth_path = [(int(round(x)), int(round(y))) for x, y in zip(x_new, y_new)]
+    return smooth_path
+
 # --------------------- MAP LOADING FUNCTION ---------------------
 def load_map(yaml_file):
     """
@@ -126,7 +151,6 @@ def load_map(yaml_file):
     with open(yaml_file, 'r') as f:
         map_yaml = yaml.safe_load(f)
 
-    # The YAML file should contain an "image" field, e.g., "my_map.pgm"
     yaml_dir = os.path.dirname(yaml_file)
     image_path = os.path.join(yaml_dir, map_yaml["image"])
 
@@ -136,17 +160,15 @@ def load_map(yaml_file):
 
     return map_img, map_yaml
 
-# --------------------- OBSTACLE INFLATION ---------------------
-def inflate_obstacles(occupancy_grid, kernel_size=(10,10)):
+# --------------------- OBSTACLE INFLATION FUNCTION ---------------------
+def inflate_obstacles(occupancy_grid, kernel_size=(20,20)):
     """
     Inflates obstacles in the occupancy grid to account for the robot's width.
     Uses a kernel of the specified size to dilate obstacles.
     """
-    # Invert grid: obstacles become 1, free space becomes 0
     inverted = np.where(occupancy_grid == 0, 1, 0).astype(np.uint8) * 255
     kernel = np.ones(kernel_size, np.uint8)
     dilated = cv2.dilate(inverted, kernel, iterations=1)
-    # Invert back: if a dilated pixel is > 0, mark as obstacle (0); otherwise free (1)
     inflated_grid = np.where(dilated > 0, 0, 1).astype(np.uint8)
     return inflated_grid
 
@@ -164,16 +186,14 @@ def visualize_path(orig_img, complete_path):
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
-# --------------------- Global Variables and Callback Function ---------------------
+# --------------------- Global Variables and Callback ---------------------
 robot_origin = None  # Stores the robot's starting point (grid coordinates)
 map_info_global = None  # Stores the loaded map metadata
 
 def amcl_pose_callback(msg):
     global robot_origin, map_info_global
-    # Retrieve the robot's position from the /amcl_pose topic
     x = msg.pose.pose.position.x
     y = msg.pose.pose.position.y
-    # Convert the position to grid coordinates using the map's origin and resolution from the YAML file
     origin = map_info_global['origin']  # [origin_x, origin_y, theta]
     resolution = map_info_global['resolution']
     grid_x = int(round((x - origin[0]) / resolution))
@@ -187,7 +207,7 @@ if __name__ == "__main__":
     path_pub = rospy.Publisher('/global_path', Path, queue_size=10)
     rate = rospy.Rate(1)  # 1 Hz
 
-    # Use rospkg to get the path of the me5413_world package and construct the map YAML file path.
+    # Get package path and construct the map YAML file path
     rospack = rospkg.RosPack()
     pkg_path = rospack.get_path("me5413_world")
     yaml_file = os.path.join(pkg_path, "maps", "my_map.yaml")
@@ -197,39 +217,38 @@ if __name__ == "__main__":
     occupancy_img, map_info = load_map(yaml_file)
     map_info_global = map_info  # Save globally for callback usage
 
-    ret, binary_img = cv2.threshold(occupancy_img, 250, 255, cv2.THRESH_BINARY)
+    ret, binary_img = cv2.threshold(occupancy_img, 0, 255, cv2.THRESH_BINARY)
     occupancy_grid = (binary_img // 255).astype(np.uint8)
 
-    # Inflate obstacles using a 10x10 kernel
-    inflated_grid = inflate_obstacles(occupancy_grid, kernel_size=(10,10))
+    # Inflate obstacles using a 20x20 kernel
+    inflated_grid = inflate_obstacles(occupancy_grid, kernel_size=(20,20))
 
     # Subscribe to /amcl_pose to obtain the robot's origin
     rospy.Subscriber("/amcl_pose", PoseWithCovarianceStamped, amcl_pose_callback)
-
-    # Wait until the robot's origin is received from /amcl_pose
     rospy.loginfo("Waiting for robot origin from /amcl_pose...")
     while robot_origin is None and not rospy.is_shutdown():
         rospy.sleep(0.1)
 
     # Use the robot's origin as the starting point for A* path planning
-    corridor_start = (robot_origin[0], 776 - robot_origin[1])
+    # Adjust coordinate transformation as needed (e.g., flipping y axis)
+    corridor_start = (robot_origin[0], 508 - robot_origin[1])
+    corridor_goal  = (425, 455)
 
-    # The goal remains as before (modify as needed)
-    corridor_goal  = (485, 475)
-
-    # Execute A* path planning
+    # Execute A* path planning for the corridor
     corridor_path = a_star(inflated_grid, corridor_start, corridor_goal)
     if corridor_path is None:
         rospy.logerr("A* Corridor Path not found.")
         exit(1)
     rospy.loginfo("A* Corridor Path computed.")
 
-    # Generate Boustrophedon coverage path starting from the end of the A* path
+    # Smooth the A* corridor path using spline interpolation
+    smoothed_corridor = spline_smoothing(corridor_path, num_points=150, smoothing=0)
+    rospy.loginfo("Smoothed A* Corridor Path computed.")
+
+    # Set coverage goal to (300,95) so that the extra segment can start from (300,95)
     coverage_start = corridor_path[-1]
-    # coverage_goal = (230, 700)
-    coverage_goal  = (310, 100)
-    
-    coverage_path = boustrophedon_path(inflated_grid, coverage_start, coverage_goal, row_step=45)
+    coverage_goal  = (300, 95)
+    coverage_path = boustrophedon_path(inflated_grid, coverage_start, coverage_goal, row_step=40)
     if coverage_path is None:
         rospy.logerr("Boustrophedon Coverage Path not found.")
         exit(1)
@@ -239,13 +258,38 @@ if __name__ == "__main__":
     smoothed_coverage = chaikin_smoothing(coverage_path, iterations=4)
 
     # Concatenate the two paths (removing the duplicate junction point)
-    complete_trajectory = corridor_path + smoothed_coverage[1:]
-    
-    # After computing the complete trajectory in pixel coordinates
-    # First, flip y coordinate: new_y = 776 - old_y
-    flipped_trajectory = [(pt[0], 776 - pt[1]) for pt in complete_trajectory]
+    complete_trajectory = smoothed_corridor + smoothed_coverage[1:]
+    rospy.loginfo("Complete trajectory computed with %d points.", len(complete_trajectory))
 
-    # Then, convert from pixel coordinates to world coordinates using resolution and origin
+    # --------------------- New Segment: Smooth Arc Transition and Straight Line Along River ---------------------
+    # Generate an arc from (300,95) to (260,135)
+    arc_center = (300, 135)  # Center chosen so that (300,95) lies on the arc
+    arc_radius = 40
+    num_arc_points = 50  # Number of sample points on the arc
+    theta_values = np.linspace(-np.pi/2, -np.pi, num_arc_points)
+    arc_points = []
+    for theta in theta_values:
+        x = int(round(arc_center[0] + arc_radius * math.cos(theta)))
+        y = int(round(arc_center[1] + arc_radius * math.sin(theta)))
+        arc_points.append((x, y))
+
+    # Generate a straight-line segment along the river (x fixed at 260) from the arc end to (260,455)
+    line_start = arc_points[-1]  # Expected to be (260,135)
+    line_end = (260, 460)
+    num_line_points = 50  # Number of sample points on the line
+    line_points = []
+    for i in range(1, num_line_points + 1):
+        y = int(round(line_start[1] + (line_end[1] - line_start[1]) * i / num_line_points))
+        line_points.append((260, y))
+
+    # Combine the new segment (skip the duplicate starting point)
+    new_segment = arc_points + line_points
+    complete_trajectory_extended = complete_trajectory + new_segment[1:]
+    rospy.loginfo("Extended complete trajectory computed with %d points.", len(complete_trajectory_extended))
+
+    # --------------------- Convert Trajectory to World Coordinates and Publish ---------------------
+    # Flip y-axis coordinates and convert pixel coordinates to world coordinates
+    flipped_trajectory = [(pt[0], 508 - pt[1]) for pt in complete_trajectory_extended]
     resolution = map_info_global['resolution']  # e.g., 0.05
     origin = map_info_global['origin']          # e.g., [-6.55, -36.95, 0]
     world_trajectory = [(
@@ -253,13 +297,10 @@ if __name__ == "__main__":
         pt[1] * resolution + origin[1]
     ) for pt in flipped_trajectory]
 
-    rospy.loginfo("Complete trajectory generated with %d points.", len(world_trajectory))
-
-
     # Build the nav_msgs/Path message
     path_msg = Path()
     path_msg.header.stamp = rospy.Time.now()
-    path_msg.header.frame_id = "map"  # Ensure this frame matches the one used in RViz
+    path_msg.header.frame_id = "map"
 
     for pt in world_trajectory:
         pose = PoseStamped()
@@ -267,12 +308,14 @@ if __name__ == "__main__":
         pose.pose.position.x = pt[0]
         pose.pose.position.y = pt[1]
         pose.pose.position.z = 0
-        pose.pose.orientation.w = 1.0  # Default orientation
+        pose.pose.orientation.w = 1.0
         path_msg.poses.append(pose)
+
+    # Optionally visualize the complete path in pixel space (uncomment if needed)
+    # visualize_path(occupancy_img, complete_trajectory_extended)
 
     # Continuously publish the path message until node shutdown
     while not rospy.is_shutdown():
-        path_msg.header.stamp = rospy.Time.now()  # Update timestamp
+        path_msg.header.stamp = rospy.Time.now()
         path_pub.publish(path_msg)
         rate.sleep()
-    
